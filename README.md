@@ -76,10 +76,10 @@ $$
 \mathrm{MSD}(\tau) = \langle |\mathbf{r}_{t+\tau} - \mathbf{r}_t|^2 \rangle_t
 $$
 
-For isotropic 2D diffusion:
+For isotropic 3D diffusion:
 
 $$
-\mathrm{MSD}(t) = 4 D t + C
+\mathrm{MSD}(t) = 6 D t + C
 $$
 
 Estimate diffusion coefficient $D$ by fitting a line to MSD vs. time:

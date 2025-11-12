@@ -64,19 +64,40 @@ def plot_hist_with_gaussian(data: np.ndarray, outpath: str, bins: int = 30, labe
     fig.savefig(outpath, dpi=150)
     plt.close(fig)
 
-
-def plot_msd(msd_lags: np.ndarray, msd: np.ndarray, slope: float, outpath: str, dt: float = 1.0):
-    t = msd_lags * dt
+def plot_msd_time(
+    dt_vals: np.ndarray,
+    msd: np.ndarray,
+    slope: float,
+    intercept: float,
+    outpath: str,
+    dim: int = 2,
+    msd_se: Optional[np.ndarray] = None,
+    D_unc: Optional[float] = None,
+):
+    """
+    Plot MSD vs time difference (Δt) and linear fit.
+    """
     fig, ax = plt.subplots(figsize=(5, 4))
-    ax.plot(t, msd, linestyle='-', linewidth=0.8, label='MSD')
-    ax.plot(t, slope * t, linestyle='-', linewidth=0.8, label=f'Fit: slope={slope:.3f}')
-    ax.set_xlabel('Lag time (frames)')
-    ax.set_ylabel('MSD (pixels^2)')
-    ax.legend()
+    if msd_se is not None and np.any(msd_se > 0):
+        ax.errorbar(dt_vals, msd, yerr=msd_se, fmt='o-', markersize=3, linewidth=0.8, capsize=3, label='MSD')
+    else:
+        ax.plot(dt_vals, msd, 'o-', markersize=3, linewidth=0.8, label='MSD')
+
+    fit_line = slope * dt_vals + intercept
+    ax.plot(dt_vals, fit_line, '-', linewidth=0.9, color='C1', label=f'Fit (slope={slope:.3g})')
+
+    ax.set_xlabel('Time difference Δt (s)')
+    ax.set_ylabel('MSD (pixels$^2$)')
+    ax.set_title(f'{dim}D Mean Squared Displacement vs Time')
+    ax.legend(fontsize='small')
+
+    D = slope / (2 * dim)
+    txt = f"D = {D:.3g}" + (f" ± {D_unc:.3g}" if D_unc else "") + " (pixels$^2$/s)"
+    ax.text(0.02, 0.95, txt, transform=ax.transAxes, va='top', ha='left', fontsize='small', bbox=dict(boxstyle='round', fc='w', alpha=0.85))
+
     fig.tight_layout()
     fig.savefig(outpath, dpi=150)
     plt.close(fig)
-
 
 def plot_polar_trajectory(positions: np.ndarray, outpath: str):
     """Plot trajectory in polar coordinates (theta, r) connected by a thin line.

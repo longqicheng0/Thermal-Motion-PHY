@@ -52,44 +52,87 @@ def radial_displacement(rel_positions: np.ndarray) -> np.ndarray:
         return np.zeros((0,))
     return np.linalg.norm(rel_positions, axis=1)
 
-
-def mean_squared_displacement(rel_positions: np.ndarray, max_lag: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
-    """Compute MSD for 2D positions for lag times 0..max_lag.
-
-    Returns lags (int array) and msd (float array). If max_lag is None, uses N//4.
-    Complexity is O(N * max_lag) which is fine for typical tracking series.
+def mean_squared_displacement_time(
+    rel_positions: np.ndarray,
+    dt: float,
+    max_lag: Optional[int] = None,
+    dim: int = 1,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    n = rel_positions.shape[0]
-    if max_lag is None:
-        max_lag = max(1, n // 4)
-    max_lag = min(max_lag, n - 1)
-    lags = np.arange(1, max_lag + 1)
-    msd = np.zeros_like(lags, dtype=float)
-    for i, lag in enumerate(lags):
-        diffs = rel_positions[lag:] - rel_positions[:-lag]
-        sq = np.sum(diffs ** 2, axis=1)
-        msd[i] = np.mean(sq)
-    return lags, msd
+    Compute MSD vs time for 1D or 2D positions assuming constant time step dt.
 
-
-def estimate_diffusion_coefficient(msd_lags: np.ndarray, msd: np.ndarray, dt: float = 1.0) -> Tuple[float, float]:
-    """Estimate 2D diffusion coefficient from MSD vs time using a linear fit.
-
-    Model: MSD(t) = 4 * D * t  (for 2D Brownian motion). We fit a line through the
-    MSD points and return D = slope / 4.
+    Args:
+        rel_positions: (N,) array for 1D or (N,2) array for 2D relative positions
+        dt: time step between consecutive frames
+        max_lag: maximum lag (in frames) to compute; if None, uses N-1
+        dim: dimensionality (1 or 2)
 
     Returns:
-        D_est, slope
+        t: time differences (Δt) corresponding to each lag
+        msd: mean squared displacement for each Δt
+        msd_se: standard error of MSD for each Δt
     """
-    # convert lags to time using dt
-    t = msd_lags * dt
-    # linear fit through origin is typical but we'll fit slope and intercept and
-    # ignore intercept for D
-    coeffs = np.polyfit(t, msd, 1)
-    slope = float(coeffs[0])
-    intercept = float(coeffs[1])
-    D = slope / 4.0
-    return D, slope
+    n = rel_positions.shape[0]
+    if n < 2:
+        raise ValueError("Need at least 2 positions to compute MSD")
+
+    if max_lag is None:
+        max_lag = n - 1
+    max_lag = min(max_lag, n - 1)
+
+    lags = np.arange(1, max_lag + 1)
+    msd = np.zeros_like(lags, dtype=float)
+    msd_se = np.zeros_like(lags, dtype=float)
+
+    for i, lag in enumerate(lags):
+        if dim == 1:
+            diffs = rel_positions[lag:] - rel_positions[:-lag]
+            sq = diffs**2
+        elif dim == 2:
+            diffs = rel_positions[lag:] - rel_positions[:-lag]
+            sq = np.sum(diffs**2, axis=1)
+        else:
+            raise ValueError("dim must be 1 or 2")
+
+        if sq.size:
+            msd[i] = np.mean(sq)
+            msd_se[i] = np.std(sq, ddof=1) / np.sqrt(len(sq)) if len(sq) > 1 else 0.0
+
+    # convert from frame lag → physical time difference
+    t = lags * dt
+    return t, msd, msd_se
+
+
+def estimate_diffusion_coefficient_time(
+    t: np.ndarray,
+    msd: np.ndarray,
+    msd_se: Optional[np.ndarray] = None,
+    dim: int = 1,
+) -> Tuple[float, float, float, float]:
+    """
+    Estimate diffusion coefficient D from MSD(t) = 2 * dim * D * t + intercept.
+
+    Returns:
+        D: estimated diffusion coefficient
+        slope: fitted slope of MSD vs time
+        intercept: fitted intercept
+        D_unc: uncertainty of D from slope covariance
+    """
+    if msd_se is not None and np.any(msd_se > 0):
+        mask = np.isfinite(msd_se) & (msd_se > 0)
+        if np.count_nonzero(mask) >= 2:
+            w = 1.0 / msd_se[mask]
+            coeffs, cov = np.polyfit(t[mask], msd[mask], 1, w=w, cov=True)
+        else:
+            coeffs, cov = np.polyfit(t, msd, 1, cov=True)
+    else:
+        coeffs, cov = np.polyfit(t, msd, 1, cov=True)
+
+    slope, intercept = coeffs
+    slope_unc = np.sqrt(cov[0, 0])
+    D = slope / (2 * dim)
+    D_unc = slope_unc / (2 * dim)
+    return D, slope, intercept, D_unc
 
 
 def fit_gaussian(data: np.ndarray) -> Dict[str, float]:
@@ -167,5 +210,6 @@ if __name__ == "__main__":
     steps = step_displacements(rel)
     print("rel:\n", rel)
     print("steps:\n", steps)
-    lags, msd = mean_squared_displacement(rel)
+    lags, msd, msd_se = mean_squared_displacement(rel)
     print("msd:", msd)
+    print("msd_se:", msd_se)

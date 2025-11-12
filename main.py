@@ -41,6 +41,21 @@ def main():
 
     os.makedirs(args.outdir, exist_ok=True)
 
+    # Physical constants and instrumentation parameters (user-provided)
+    # Viscosity mu and uncertainty
+    MU_VAL = 0.0941192
+    MU_UNC = 0.0047 
+    # particle radius in micrometers and uncertainty
+    R_VAL_UM = 0.8
+    R_UNC_UM = 0.05
+    # pixel-to-length scale: 0.19 um per 20 pixels
+
+    PIXEL_SCALE_M_PER_PX = 0.1204 * 1e-6  # meters per pixel
+    PIXEL_SCALE_M2_PER_PX = PIXEL_SCALE_M_PER_PX ** 2
+    # Boltzmann constant and temperature (K)
+    K_B = 1.380649e-23
+    T_K = 296.5
+
     # Determine files to process: either a single input file, or all .txt in indir
     files = []
     if args.input:
@@ -77,11 +92,45 @@ def main():
             'mean_radial': float(np.mean(radial)) if radial.size else 0.0,
         }
 
-        # MSD and diffusion estimate
-        lags, msd = mean_squared_displacement(rel)
-        D_est, slope = estimate_diffusion_coefficient(lags, msd, dt=args.dt) if lags.size else (0.0, 0.0)
-        stats['D_est_pixels2_per_frame'] = float(D_est)
-        stats['msd_slope'] = float(slope)
+        # MSD and diffusion estimate (includes per-lag MSD standard errors)
+        lags, msd, msd_se = mean_squared_displacement(rel)
+        if lags.size:
+            # pass dt and per-lag errors to the estimator for a properly
+            # scaled fit and uncertainty. lags are in frames; estimator
+            # will convert to time using dt.
+            D_est_pix2_per_s, slope, D_unc_pix2_per_s = estimate_diffusion_coefficient(lags, msd, dt=args.dt, msd_se=msd_se, dim=1)
+        else:
+            raise ValueError("No lags computed for MSD; cannot estimate diffusion coefficient.")
+        stats['D_est_pixels2_per_s'] = float(D_est_pix2_per_s) 
+        stats['D_est_unc_pixels2_per_s'] = float(D_unc_pix2_per_s)
+        stats['msd_slope_pixels2_per_s'] = float(slope)
+
+        # Convert pixel^2/s to m^2/s using pixel scale
+        scale_m = PIXEL_SCALE_M2_PER_PX
+        scale_final = scale_m 
+        D_est_final_s = float(D_est_pix2_per_s * scale_final)
+        D_unc_final_s = float(D_unc_pix2_per_s * scale_final)
+        stats['D_est_m2_s'] = D_est_final_s
+        stats['D_est_unc_m2_s'] = D_unc_final_s
+
+        # Compute k from D = k * T / gamma  => k = D * gamma / T
+        mu_val = MU_VAL
+        mu_unc = MU_UNC
+        r_val = R_VAL_UM * 1e-6
+        r_unc = R_UNC_UM * 1e-6
+        gamma = 6.0 * np.pi * mu_val * r_val
+        k_est = D_est_final_s * gamma / T_K
+        # Propagate uncertainties (assume independent): contributions from D, mu, r
+        dk_dD = gamma / T_K
+        dk_dmu = D_est_final_s * 6.0 * np.pi * r_val / T_K
+        dk_dr = D_est_final_s * 6.0 * np.pi * mu_val / T_K
+        sigma_D = D_unc_final_s
+        sigma_mu = mu_unc
+        sigma_r = r_unc
+        k_unc = float(np.sqrt((dk_dD * sigma_D) ** 2 + (dk_dmu * sigma_mu) ** 2 + (dk_dr * sigma_r) ** 2))
+
+        stats['k_est_J_per_K'] = float(k_est)
+        stats['k_est_unc_J_per_K'] = float(k_unc)
 
         # Use numeric label for each trial (order independent)
         numeric_label = len(all_rel_positions) + 1
@@ -119,13 +168,48 @@ def main():
         stats['step_y_tests'] = ny
         plot_hist_with_gaussian(step_x, os.path.join(file_outdir, 'step_x_hist_gauss.png'), label='step_x')
         plot_hist_with_gaussian(step_y, os.path.join(file_outdir, 'step_y_hist_gauss.png'), label='step_y')
-        if lags.size:
-            plot_msd(lags, msd, slope, os.path.join(file_outdir, 'msd.png'), dt=args.dt)
+        plot_msd(lags, msd, slope, os.path.join(file_outdir, 'msd.png'), dt=args.dt, dim=1, msd_se=msd_se)
         # polar trajectory for each file
         plot_polar_trajectory(rel, os.path.join(file_outdir, 'polar_trajectory.png'))
 
         all_rel_positions.append(rel)
         all_labels.append(label)
+
+    # After processing all files, prepare and save a results table (CSV) containing D and k estimates
+    try:
+        import csv
+        csvpath = os.path.join(args.outdir, 'k_estimates_table.csv')
+        with open(csvpath, 'w', newline='') as csvf:
+            writer = csv.writer(csvf)
+            header = [
+                'label', 'n_frames',
+                'D_m2_s', 'D_unc_m2_s',
+                'k_J_per_K', 'k_unc_J_per_K'
+            ]
+            writer.writerow(header)
+            print('\nCalculated D and k estimates:')
+            print(', '.join(header))
+            for label, st in summaries.items():
+                row = [
+                    label,
+                    st.get('n_frames', ''),
+                    st.get('D_est_m2_s', ''),
+                    st.get('D_est_unc_m2_s', ''),
+                    st.get('k_est_J_per_K', ''),
+                    st.get('k_est_unc_J_per_K', ''),
+                ]
+                writer.writerow(row)
+                # print a concise table line
+                print(', '.join([str(x) for x in row]))
+
+            # print avg k
+            k_values = [st['k_est_J_per_K'] for st in summaries.values() if 'k_est_J_per_K' in st]
+            if k_values:
+                avg_k = sum(k_values) / len(k_values)
+                print(f"Average k over all trials: {avg_k} J/K")
+        print(f"Saved D and k estimates to: {csvpath}")
+    except Exception as e:
+        print(f"Warning: failed to write k estimates table: {e}")
 
     # Combined overlays saved in outdir
     if all_rel_positions:
@@ -177,6 +261,23 @@ def main():
             k_params = 5  # 2 means + 3 unique cov entries
             aic = 2 * k_params - 2 * ll
             bic = k_params * np.log(n_pts) - 2 * ll
+            # Theoretical diffusion calculation from D = k_B T / (6 pi mu r)
+            # Use user-provided viscosity and radius with uncertainties (assumed units: mu in Pa*s, r in micrometers)
+            # Values provided by user:
+
+            r_val_um = 0.8
+            r_unc_um = 0.05
+            # convert radius to meters
+            r_val = r_val_um * 1e-6
+            r_unc = r_unc_um * 1e-6
+            k_B = 1.380649e-23
+            T = 298.15
+            gamma = 6.0 * np.pi * MU_VAL * r_val
+            D_theory = k_B * T / gamma
+            # uncertainty propagation: relative uncertainties add in quadrature for mu and r
+            # dD/D = sqrt((dmu/mu)^2 + (dr/r)^2)
+            rel_unc = np.sqrt((MU_UNC / MU_VAL) ** 2 + (r_unc / r_val) ** 2)
+            D_theory_unc = D_theory * rel_unc
             agg_summary = {
                 'n_points': n_pts,
                 'x_fit': agg_x_fit,
@@ -187,6 +288,12 @@ def main():
                 'log_likelihood': ll,
                 'aic': aic,
                 'bic': bic,
+                'D_theory_m2_s': float(D_theory),
+                'D_theory_unc_m2_s': float(D_theory_unc),
+                'mu_used_Pa_s': MU_VAL,
+                'mu_unc_Pa_s': MU_UNC,
+                'r_used_m': r_val,
+                'r_unc_m': r_unc,
             }
             # Save aggregate summary
             import json
