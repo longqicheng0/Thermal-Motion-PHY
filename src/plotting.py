@@ -124,7 +124,7 @@ def plot_bivariate_surface(
     cmap: str = 'viridis',
     overlay_trajectories: Optional[Sequence[np.ndarray]] = None,
     end_points: Optional[np.ndarray] = None,
-    alpha: float = 0.6,
+    alpha: float = 0.9,
 ):
     """Create a 3D surface (and 2D contour) of the fitted bivariate Gaussian over X-Y.
 
@@ -152,27 +152,48 @@ def plot_bivariate_surface(
     ys = np.linspace(ymin - dy, ymax + dy, grid_size)
     Xg, Yg = np.meshgrid(xs, ys)
 
-    # compute pdf values
-   
-    rv = multivariate_normal(mean=[xm, ym], cov=cov_list)
-    Z = rv.pdf(np.dstack((Xg, Yg)))
+    # compute pdf values (ensure covariance is numpy array)
+    cov_arr = np.asarray(cov, dtype=float)
+    try:
+        from scipy.stats import multivariate_normal as _mvn
+        rv = _mvn(mean=[xm, ym], cov=cov_arr) # type: ignore
+        Z = rv.pdf(np.dstack((Xg, Yg)))
+    except Exception:
+        # fallback manual evaluation of bivariate normal pdf
+        det = np.linalg.det(cov_arr)
+        inv = np.linalg.inv(cov_arr)
+        pos = np.empty(Xg.shape + (2,))
+        pos[:, :, 0] = Xg
+        pos[:, :, 1] = Yg
+        diff = pos - np.array([xm, ym])
+        # exponent = -0.5 * diff^T inv diff for each grid point
+        exponents = -0.5 * np.einsum('...i,ij,...j->...', diff, inv, diff)
+        Z = np.exp(exponents) / (2 * np.pi * np.sqrt(det))
 
-    # 3D surface (with transparency)
-    fig = plt.figure(figsize=(6, 5))
+    # 3D surface (with transparency). First plot base trajectories at z=0 so they're visible under the surface
+    fig = plt.figure(figsize=(7, 6))
     ax = fig.add_subplot(111, projection='3d')
-    ax.plot_surface(Xg, Yg, Z, cmap=cmap, linewidth=0, antialiased=True, alpha=alpha)
+    # plot trajectories on the XY plane at z=0
+    if overlay_trajectories:
+        for pos in overlay_trajectories:
+            pos = np.asarray(pos)
+            if pos.size:
+                ax.plot(pos[:, 0], pos[:, 1], zs=0.0, zdir='z', color='k', linewidth=0.6, alpha=0.8)
+    # plot end points on XY plane
+    if end_points is not None and end_points.size:
+        ep = np.asarray(end_points)
+        ax.scatter(ep[:, 0], ep[:, 1], zs=0.0, zdir='z', c='red', s=20, label='end points') # type: ignore
+
+    # now plot surface semi-transparent so the base plane annotations are visible
+    surf = ax.plot_surface(Xg, Yg, Z, cmap=cmap, linewidth=0, antialiased=True, alpha=alpha)
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_zlabel('pdf')
-
-    # overlay end points if provided
-    if end_points is not None and end_points.size:
-        ep = np.asarray(end_points)
-        ax.scatter(ep[:, 0], ep[:, 1], np.max(Z) * 1.05, c='red', s=20, label='end points')
-        try:
-            ax.legend()
-        except Exception:
-            pass
+    # add a colorbar linked to the surface
+    try:
+        fig.colorbar(surf, ax=ax, shrink=0.6)
+    except Exception:
+        pass
 
     fig.tight_layout()
     fig.savefig(outpath, dpi=150)

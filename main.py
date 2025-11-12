@@ -169,7 +169,7 @@ def main():
             # compute average log-likelihood and information criteria
 
             cov_arr = np.asarray(bivar['cov'], dtype=float)
-            rv = multivariate_normal(mean=bivar['mean'], cov=int(cov_arr))
+            rv = multivariate_normal(mean=bivar['mean'], cov=cov_arr) # type: ignore
             logpdfs = rv.logpdf(agg)
             ll = float(np.sum(logpdfs))
             
@@ -192,8 +192,16 @@ def main():
             import json
             with open(os.path.join(args.outdir, 'aggregate_positions_summary.json'), 'w') as fh:
                 json.dump(agg_summary, fh, indent=2)
-            # save bivariate surface plot
-            plot_bivariate_surface(agg, os.path.join(args.outdir, 'agg_positions_bivariate_surface.png'))
+            # save bivariate surface plot (pass overlay trajectories and end_points)
+            # end points: final relative position from each trial
+            end_pts = np.vstack([rel[-1] for rel in all_rel_positions if rel.size]) if all_rel_positions else None
+            plot_bivariate_surface(
+                agg,
+                os.path.join(args.outdir, 'agg_positions_bivariate_surface.png'),
+                overlay_trajectories=all_rel_positions,
+                end_points=end_pts,
+                alpha=0.45,
+            )
             print(f"Aggregate position analysis saved to: {args.outdir}/aggregate_positions_summary.json")
         except Exception as e:
             print(f"Warning: failed to compute aggregate positions analysis: {e}")
